@@ -1,32 +1,23 @@
 {
-  "required_api_version": "^2.0.0",
-  "name": "Demo",
-  "description": "Demo extension",
-  "developer_name": "Aleksandr Gornostal",
+  "name": "Shortcuts & Groups Manager",
+  "description": "Quickly launch directories, files, URLs, shell commands, or multi-item groups.",
+  "developer_name": "DroidLinux",
   "icon": "images/icon.png",
   "options": {
-    "query_debounce": 0.05
+    "query_debounce": 0.1
   },
   "preferences": [
     {
-      "id": "demo_kw",
+      "id": "kw",
       "type": "keyword",
-      "name": "Demo",
-      "default_value": "dm"
+      "name": "Shortcuts Activation Keyword",
+      "default_value": "q"
     },
     {
-      "id": "item_name",
-      "type": "input",
-      "name": "Item name",
-      "description": "Name for each item",
-      "default_value": "Item"
-    },
-    {
-      "id": "memo",
+      "id": "shortcuts_path",
       "type": "text",
-      "name": "Memo",
-      "description": "Write something here",
-      "default_value": ""
+      "name": "Shortcuts JSON Path (Optional)",
+      "default_value": "~/.config/ulauncher/shortcuts.json"
     }
   ]
 }
