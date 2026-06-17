@@ -1,4 +1,5 @@
 {
+  "required_api_version": "^2.0.0",  
   "name": "Shortcuts & Groups Manager",
   "description": "Quickly launch directories, files, URLs, shell commands, or multi-item groups.",
   "developer_name": "DroidLinux",
