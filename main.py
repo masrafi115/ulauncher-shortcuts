@@ -9,11 +9,11 @@ from pathlib import Path
 
 from ulauncher.api.client.Extension import Extension
 from ulauncher.api.client.EventListener import EventListener
-from ulauncher.api.shared.event import KeywordQueryEvent, PreferencesEvent, PreferencesUpdateEvent
+from ulauncher.api.shared.event import KeywordQueryEvent, PreferencesEvent, PreferencesUpdateEvent, ItemEnterEvent
 from ulauncher.api.shared.item.ExtensionResultItem import ExtensionResultItem
 from ulauncher.api.shared.action.RenderResultListAction import RenderResultListAction
 from ulauncher.api.shared.action.SetUserQueryAction import SetUserQueryAction
-from ulauncher.api.shared.action.RunScriptAction import RunScriptAction
+from ulauncher.api.shared.action.ExtensionCustomAction import ExtensionCustomAction
 from ulauncher.api.shared.action.DoNothingAction import DoNothingAction
 
 logger = logging.getLogger(__name__)
@@ -25,6 +25,7 @@ class ShortcutsPlugin(Extension):
         self.subscribe(KeywordQueryEvent, KeywordQueryEventListener())
         self.subscribe(PreferencesEvent, PreferencesEventListener())
         self.subscribe(PreferencesUpdateEvent, PreferencesEventListener())
+        self.subscribe(ItemEnterEvent, ItemEnterEventListener())  # Subscribed for robust background execution
 
     def get_storage_path(self):
         pref_path = self.preferences.get('shortcuts_path') if self.preferences else None
@@ -71,11 +72,10 @@ class KeywordQueryEventListener(EventListener):
         raw_args = argument.strip()
         shortcuts = extension.load_shortcuts()
         items = []
-
         icon = "images/icon.png"
 
         # -----------------------------------------------------------------
-        # SECTION 1: Intercept Native Management Commands
+        # SECTION 1: Intercept Native Management Commands (COMMIT INTERFACE)
         # -----------------------------------------------------------------
         if raw_args.startswith("commit_action "):
             payload = raw_args[14:].strip()
@@ -84,20 +84,19 @@ class KeywordQueryEventListener(EventListener):
                 action_type, target_key = bits[0], bits[1]
                 extra_data = bits[2] if len(bits) == 3 else ""
 
-                if action_type == "add":
-                    if "|" in extra_data:
-                        stype, sdata = [x.strip() for x in extra_data.split("|", 1)]
-                        new_entry = {"Type": stype.capitalize(), "Key": target_key}
-                        
-                        if stype.lower() in ["directory", "file", "url"]:
-                            new_entry["Path"] = sdata
-                        elif stype.lower() == "shell":
-                            new_entry["ShellType"] = "Cmd"
-                            new_entry["Arguments"] = sdata
-                            new_entry["Silent"] = True
-                        
-                        shortcuts[target_key] = new_entry
-                        extension.save_shortcuts(shortcuts)
+                if action_type == "add" and "|" in extra_data:
+                    stype, sdata = [x.strip() for x in extra_data.split("|", 1)]
+                    new_entry = {"Type": stype.capitalize()}
+                    
+                    if stype.lower() in ["directory", "file", "url"]:
+                        new_entry["Path"] = sdata
+                    elif stype.lower() == "shell":
+                        new_entry["ShellType"] = "Cmd"
+                        new_entry["Arguments"] = sdata
+                        new_entry["Silent"] = True
+                    
+                    shortcuts[target_key] = new_entry
+                    extension.save_shortcuts(shortcuts)
 
                 elif action_type == "remove":
                     if target_key in shortcuts:
@@ -106,8 +105,7 @@ class KeywordQueryEventListener(EventListener):
 
                 elif action_type == "add_group":
                     group_keys = extra_data.split()
-                    new_group = {"Type": "Group", "Key": target_key, "Keys": group_keys}
-                    shortcuts[target_key] = new_group
+                    shortcuts[target_key] = {"Type": "Group", "Keys": group_keys}
                     extension.save_shortcuts(shortcuts)
 
                 return RenderResultListAction([
@@ -120,7 +118,7 @@ class KeywordQueryEventListener(EventListener):
                 ])
 
         # -----------------------------------------------------------------
-        # SECTION 2: Parsing Inline Admin Utility Rules
+        # SECTION 2: UI Handlers for Inline Admin Commands
         # -----------------------------------------------------------------
         bits = raw_args.split(maxsplit=3)
         cmd_trigger = bits[0].lower() if len(bits) > 0 else ""
@@ -162,7 +160,7 @@ class KeywordQueryEventListener(EventListener):
             ])
 
         # -----------------------------------------------------------------
-        # SECTION 3: Standard Shortcut Resolution & Execution Engine
+        # SECTION 3: Standard Shortcut Runner (EXACT MATCH EXECUTOR)
         # -----------------------------------------------------------------
         search_bits = raw_args.split(maxsplit=1)
         user_key = search_bits[0] if len(search_bits) > 0 else ""
@@ -171,85 +169,41 @@ class KeywordQueryEventListener(EventListener):
         if user_key in shortcuts:
             sc = shortcuts[user_key]
             stype = sc.get("Type", "Unknown")
+            desc = sc.get("Path") if "Path" in sc else sc.get("Arguments", "")
             
-            if stype == "Url":
-                url = sc.get("Path", "")
-                if user_arg:
-                    url = url.replace("${q}", user_arg).replace("%s", user_arg)
-                else:
-                    url = url.replace("${q}", "").replace("%s", "")
-                
-                # Check for alternative URIs / Custom Protocols
-                if "://" in url:
-                    # Keep customized URIs exactly as intended (obsidian://, file://)
-                    pass
-                else:
-                    url = "https://" + url
-                
-                # Use Python's native webbrowser package wrapper to avoid xdg-open shell escaping crashes
-                return RenderResultListAction([ExtensionResultItem(
-                    icon=icon, name=f"🌐 URI Trigger: {user_key}", description=f"Opening URI: {url}",
-                    on_enter=RunScriptAction(f"python3 -m webbrowser '{url}'")
-                )])
-                
-            elif stype in ["Directory", "File"]:
-                path = os.path.expandvars(sc.get("Path", ""))
-                return RenderResultListAction([ExtensionResultItem(
-                    icon=icon, name=f"📁 Open {stype}: {user_key}", description=f"Path: {path}",
-                    on_enter=RunScriptAction(f"xdg-open '{path}'")
-                )])
-                
-            elif stype == "Shell":
-                cmd = sc.get("Arguments", "")
-                if user_arg:
-                    cmd = cmd.replace("${q}", user_arg).replace("%s", user_arg)
-                return RenderResultListAction([ExtensionResultItem(
-                    icon=icon, name=f"⚡ Run Command: {user_key}", description=f"Executing: {cmd}",
-                    on_enter=RunScriptAction(cmd)
-                )])
-                
-            elif stype == "Group":
-                gkeys = sc.get("Keys", [])
-                chained = []
-                for k in gkeys:
-                    child = shortcuts.get(k)
-                    if child:
-                        ctype = child.get("Type")
-                        if ctype in ["Directory", "File"]:
-                            chained.append(f"xdg-open '{os.path.expandvars(child.get('Path'))}'")
-                        elif ctype == "Url":
-                            u = child.get("Path").replace("${q}", user_arg).replace("%s", user_arg)
-                            if "://" not in u:
-                                u = "https://" + u
-                            chained.append(f"python3 -m webbrowser '{u}'")
-                        elif ctype == "Shell":
-                            chained.append(child.get("Arguments").replace("${q}", user_arg).replace("%s", user_arg))
-                
-                exec_payload = " & ".join(chained) if chained else "true"
-                return RenderResultListAction([ExtensionResultItem(
-                    icon=icon, name=f"📦 Launch Multi-Group: {user_key}", description=f"Triggers {len(gkeys)} actions at once",
-                    on_enter=RunScriptAction(exec_payload)
-                )])
+            # Use background payload processing to ensure code runs without sandbox bugs
+            payload_data = {"key": user_key, "args": user_arg, "config": sc}
+            
+            return RenderResultListAction([
+                ExtensionResultItem(
+                    icon=icon, 
+                    name=f"🚀 Press Enter to Run: {user_key}", 
+                    description=f"Type: {stype} | Target: {desc}", 
+                    on_enter=ExtensionCustomAction(payload_data, keep_app_open=False)
+                )
+            ])
 
-        # List view / fuzzy matcher
+        # -----------------------------------------------------------------
+        # SECTION 4: Live List Search View Generator (The Fix for "Unknown")
+        # -----------------------------------------------------------------
         if raw_args:
-            matched_keys = difflib.get_close_matches(raw_args, list(shortcuts.keys()), n=5, cutoff=0.2)
+            matched_keys = difflib.get_close_matches(raw_args, list(shortcuts.keys()), n=8, cutoff=0.1)
             if not matched_keys:
                 matched_keys = [k for k in shortcuts.keys() if raw_args.lower() in k.lower()]
-            targets = [shortcuts[k] for k in matched_keys if k in shortcuts]
+            # FIX: We build a tuple of (Key, DictionaryObject) instead of dropping the key
+            targets = [(k, shortcuts[k]) for k in matched_keys if k in shortcuts]
         else:
-            targets = list(shortcuts.values())
+            targets = list(shortcuts.items())
 
-        for sc in targets:
+        for skey, sc in targets:
             stype = sc.get("Type", "Unknown")
-            skey = sc.get("Key", "Unknown")
-            
             prefix = "📁" if stype in ["Directory", "File"] else "🌐" if stype == "Url" else "⚡" if stype == "Shell" else "📦"
             desc = sc.get("Path") if "Path" in sc else sc.get("Arguments") if "Arguments" in sc else f"Group matching keys: {', '.join(sc.get('Keys', []))}"
 
             items.append(ExtensionResultItem(
                 icon=icon,
-                name=f"{prefix} [{skey}] {stype} Shortcut",
+                # FIX: Uses the definitive dictionary key value 'skey', making "Unknown" impossible
+                name=f"{prefix} [{str(skey)}] {stype} Shortcut",
                 description=f"Payload config: {desc}",
                 on_enter=SetUserQueryAction(f"{keyword} {skey} ")
             ))
@@ -262,7 +216,59 @@ class KeywordQueryEventListener(EventListener):
                 on_enter=DoNothingAction()
             ))
 
-        return RenderResultListAction(items)
+        return RenderResultListAction(items[:15])
+
+# -----------------------------------------------------------------
+# NATIVE EXECUTION LISTENER BLOCK (Fixes Command Run Failures)
+# -----------------------------------------------------------------
+class ItemEnterEventListener(EventListener):
+    def on_event(self, event, extension):
+        payload = event.get_data()
+        if not payload:
+            return
+            
+        user_arg = payload.get("args", "")
+        sc = payload.get("config", {})
+        stype = sc.get("Type", "Unknown")
+
+        if stype == "Url":
+            url = sc.get("Path", "")
+            if user_arg:
+                url = url.replace("${q}", user_arg).replace("%s", user_arg)
+            else:
+                url = url.replace("${q}", "").replace("%s", "")
+            if "://" not in url:
+                url = "https://" + url
+            webbrowser.open(url)
+
+        elif stype in ["Directory", "File"]:
+            path = os.path.expandvars(sc.get("Path", ""))
+            if os.path.exists(path):
+                subprocess.Popen(["xdg-open", path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        elif stype == "Shell":
+            cmd = sc.get("Arguments", "")
+            if user_arg:
+                cmd = cmd.replace("${q}", user_arg).replace("%s", user_arg)
+            subprocess.Popen(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        elif stype == "Group":
+            shortcuts = extension.load_shortcuts()
+            for k in sc.get("Keys", []):
+                child = shortcuts.get(k)
+                if not child: 
+                    continue
+                ctype = child.get("Type")
+                
+                if ctype in ["Directory", "File"]:
+                    subprocess.Popen(["xdg-open", os.path.expandvars(child.get("Path", ""))], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                elif ctype == "Url":
+                    u = child.get("Path", "").replace("${q}", user_arg).replace("%s", user_arg)
+                    if "://" not in u: 
+                        u = "https://" + u
+                    webbrowser.open(u)
+                elif ctype == "Shell":
+                    subprocess.Popen(child.get("Arguments", "").replace("${q}", user_arg).replace("%s", user_arg), shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 if __name__ == '__main__':
     ShortcutsPlugin().run()
