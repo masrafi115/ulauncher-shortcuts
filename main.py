@@ -74,12 +74,11 @@ class KeywordQueryEventListener(EventListener):
         items = []
         icon = "images/icon.png"
 
-        # Helper method to safely pull whatever value string exists in the config entry
         def extract_target_string(config_dict):
             return config_dict.get("Path", config_dict.get("Url", config_dict.get("Arguments", "")))
 
         # -----------------------------------------------------------------
-        # MANAGEMENT DIRECTIVES (add, remove, group)
+        # MANAGEMENT UTILITIES (add, remove, group)
         # -----------------------------------------------------------------
         if raw_args.startswith("commit_action "):
             payload = raw_args[14:].strip()
@@ -156,14 +155,13 @@ class KeywordQueryEventListener(EventListener):
             ])
 
         # -----------------------------------------------------------------
-        # INTERFACE GENERATOR LOOP
+        # INTERFACE LOOP MATCH ENGINE
         # -----------------------------------------------------------------
         if raw_args:
             search_bits = raw_args.split(maxsplit=1)
             user_key = search_bits[0]
             user_arg = search_bits[1].strip() if len(search_bits) == 2 else ""
             
-            # Catch exact matches with incoming custom parameters immediately
             if user_key in shortcuts and user_arg:
                 sc = shortcuts[user_key]
                 stype = sc.get("Type", "Unknown")
@@ -171,7 +169,7 @@ class KeywordQueryEventListener(EventListener):
                 payload_data = {"args": user_arg, "config": sc}
                 return RenderResultListAction([
                     ExtensionResultItem(
-                        icon=icon, name=f"🚀 Run {user_key} with args", description=f"Processing query variables: '{user_arg}' -> {desc}",
+                        icon=icon, name=f"🚀 Run {user_key} with args", description=f"Query: '{user_arg}' -> {desc}",
                         on_enter=ExtensionCustomAction(payload_data, keep_app_open=False)
                     )
                 ])
@@ -187,28 +185,27 @@ class KeywordQueryEventListener(EventListener):
             stype = sc.get("Type", "Unknown")
             prefix = "📁" if stype in ["Directory", "File"] else "🌐" if stype == "Url" else "⚡" if stype == "Shell" else "📦"
             
-            # Universal lookup fallback rules
-            desc = extract_target_string(sc) if stype != "Group" else f"Chained layout keys: {', '.join(sc.get('Keys', []))}"
+            desc = extract_target_string(sc) if stype != "Group" else f"Chained components: {', '.join(sc.get('Keys', []))}"
             payload_data = {"args": "", "config": sc}
 
             items.append(ExtensionResultItem(
                 icon=icon,
                 name=f"{prefix} [{str(skey)}] {stype} Shortcut",
-                description=f"Target configuration: {desc}",
+                description=f"Target: {desc}",
                 on_enter=ExtensionCustomAction(payload_data, keep_app_open=False)
             ))
 
         if not items:
             items.append(ExtensionResultItem(
                 icon=icon, name="Shortcuts Manager Hub",
-                description="Syntax: add [type] [key] [target] (Types: directory, file, url, shell)",
+                description="Syntax: add [type] [key] [target]",
                 on_enter=DoNothingAction()
             ))
 
         return RenderResultListAction(items[:15])
 
 # -----------------------------------------------------------------
-# NATIVE PROCESS ENVIRONMENT RUNNER
+# SMART EXECUTION CONTAINER (ROUTES TO SYSTEM CORE APPS DYNAMICALLY)
 # -----------------------------------------------------------------
 class ItemEnterEventListener(EventListener):
     def on_event(self, event, extension):
@@ -224,13 +221,23 @@ class ItemEnterEventListener(EventListener):
             if not target_str: return ""
             return target_str.replace("${q}", args_str).replace("%s", args_str) if args_str else target_str.replace("${q}", "").replace("%s", "")
 
+        def execute_uri(uri_string):
+            """Intelligently routes URLs to the browser, and protocols to native applications."""
+            if not uri_string: return
+            
+            # Detect native application schemas (obsidian://, vlc://, etc.)
+            if "://" in uri_string and not uri_string.startswith(("http://", "https://")):
+                subprocess.Popen(["xdg-open", uri_string], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            else:
+                # Normal HTTP links go out to standard browser
+                if "://" not in uri_string:
+                    uri_string = "https://" + uri_string
+                webbrowser.open(uri_string)
+
         if stype == "Url":
             url = sc.get("Url", sc.get("Path", ""))
             url = resolve_args(url, user_arg)
-            if url:
-                if "://" not in url:
-                    url = "https://" + url
-                webbrowser.open(url)
+            execute_uri(url)
 
         elif stype in ["Directory", "File"]:
             path = os.path.expandvars(sc.get("Path", sc.get("Url", "")))
@@ -256,9 +263,7 @@ class ItemEnterEventListener(EventListener):
                 elif ctype == "Url":
                     u = child.get("Url", child.get("Path", ""))
                     u = resolve_args(u, user_arg)
-                    if u:
-                        if "://" not in u: u = "https://" + u
-                        webbrowser.open(u)
+                    execute_uri(u)
                 elif ctype == "Shell":
                     c = child.get("Arguments", "")
                     c = resolve_args(c, user_arg)
