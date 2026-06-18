@@ -25,7 +25,7 @@ class ShortcutsPlugin(Extension):
         self.subscribe(KeywordQueryEvent, KeywordQueryEventListener())
         self.subscribe(PreferencesEvent, PreferencesEventListener())
         self.subscribe(PreferencesUpdateEvent, PreferencesEventListener())
-        self.subscribe(ItemEnterEvent, ItemEnterEventListener())  # Subscribed for robust background execution
+        self.subscribe(ItemEnterEvent, ItemEnterEventListener())  # ESSENTIAL: Connects click to OS runner
 
     def get_storage_path(self):
         pref_path = self.preferences.get('shortcuts_path') if self.preferences else None
@@ -75,7 +75,7 @@ class KeywordQueryEventListener(EventListener):
         icon = "images/icon.png"
 
         # -----------------------------------------------------------------
-        # SECTION 1: Intercept Native Management Commands (COMMIT INTERFACE)
+        # SECTION 1: Intercept Native Management Commands
         # -----------------------------------------------------------------
         if raw_args.startswith("commit_action "):
             payload = raw_args[14:].strip()
@@ -118,7 +118,7 @@ class KeywordQueryEventListener(EventListener):
                 ])
 
         # -----------------------------------------------------------------
-        # SECTION 2: UI Handlers for Inline Admin Commands
+        # SECTION 2: UI Parsers for Admin Commands (add, remove, group)
         # -----------------------------------------------------------------
         bits = raw_args.split(maxsplit=3)
         cmd_trigger = bits[0].lower() if len(bits) > 0 else ""
@@ -160,7 +160,7 @@ class KeywordQueryEventListener(EventListener):
             ])
 
         # -----------------------------------------------------------------
-        # SECTION 3: Standard Shortcut Runner (EXACT MATCH EXECUTOR)
+        # SECTION 3: Exact / Arguments Routing Matcher
         # -----------------------------------------------------------------
         search_bits = raw_args.split(maxsplit=1)
         user_key = search_bits[0] if len(search_bits) > 0 else ""
@@ -170,27 +170,24 @@ class KeywordQueryEventListener(EventListener):
             sc = shortcuts[user_key]
             stype = sc.get("Type", "Unknown")
             desc = sc.get("Path") if "Path" in sc else sc.get("Arguments", "")
-            
-            # Use background payload processing to ensure code runs without sandbox bugs
-            payload_data = {"key": user_key, "args": user_arg, "config": sc}
+            payload_data = {"args": user_arg, "config": sc}
             
             return RenderResultListAction([
                 ExtensionResultItem(
                     icon=icon, 
-                    name=f"🚀 Press Enter to Run: {user_key}", 
+                    name=f"🚀 Run Shortcut: {user_key}", 
                     description=f"Type: {stype} | Target: {desc}", 
                     on_enter=ExtensionCustomAction(payload_data, keep_app_open=False)
                 )
             ])
 
         # -----------------------------------------------------------------
-        # SECTION 4: Live List Search View Generator (The Fix for "Unknown")
+        # SECTION 4: The Live Search View (FIXED: Clicking Runs Instantly)
         # -----------------------------------------------------------------
         if raw_args:
             matched_keys = difflib.get_close_matches(raw_args, list(shortcuts.keys()), n=8, cutoff=0.1)
             if not matched_keys:
                 matched_keys = [k for k in shortcuts.keys() if raw_args.lower() in k.lower()]
-            # FIX: We build a tuple of (Key, DictionaryObject) instead of dropping the key
             targets = [(k, shortcuts[k]) for k in matched_keys if k in shortcuts]
         else:
             targets = list(shortcuts.items())
@@ -200,12 +197,15 @@ class KeywordQueryEventListener(EventListener):
             prefix = "📁" if stype in ["Directory", "File"] else "🌐" if stype == "Url" else "⚡" if stype == "Shell" else "📦"
             desc = sc.get("Path") if "Path" in sc else sc.get("Arguments") if "Arguments" in sc else f"Group matching keys: {', '.join(sc.get('Keys', []))}"
 
+            # FIXED: Package configuration data right into the item card
+            payload_data = {"args": "", "config": sc}
+
             items.append(ExtensionResultItem(
                 icon=icon,
-                # FIX: Uses the definitive dictionary key value 'skey', making "Unknown" impossible
                 name=f"{prefix} [{str(skey)}] {stype} Shortcut",
                 description=f"Payload config: {desc}",
-                on_enter=SetUserQueryAction(f"{keyword} {skey} ")
+                # FIXED: Changed from SetUserQueryAction to ExtensionCustomAction to execute instantly on click
+                on_enter=ExtensionCustomAction(payload_data, keep_app_open=False)
             ))
 
         if not items:
@@ -219,7 +219,7 @@ class KeywordQueryEventListener(EventListener):
         return RenderResultListAction(items[:15])
 
 # -----------------------------------------------------------------
-# NATIVE EXECUTION LISTENER BLOCK (Fixes Command Run Failures)
+# NATIVE PROCESS ENVIRONMENT RUNNER (THE EXECUTION ENGINE)
 # -----------------------------------------------------------------
 class ItemEnterEventListener(EventListener):
     def on_event(self, event, extension):
