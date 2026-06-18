@@ -25,7 +25,7 @@ class ShortcutsPlugin(Extension):
         self.subscribe(KeywordQueryEvent, KeywordQueryEventListener())
         self.subscribe(PreferencesEvent, PreferencesEventListener())
         self.subscribe(PreferencesUpdateEvent, PreferencesEventListener())
-        self.subscribe(ItemEnterEvent, ItemEnterEventListener())  # ESSENTIAL: Connects click to OS runner
+        self.subscribe(ItemEnterEvent, ItemEnterEventListener())
 
     def get_storage_path(self):
         pref_path = self.preferences.get('shortcuts_path') if self.preferences else None
@@ -74,8 +74,12 @@ class KeywordQueryEventListener(EventListener):
         items = []
         icon = "images/icon.png"
 
+        # Helper method to safely pull whatever value string exists in the config entry
+        def extract_target_string(config_dict):
+            return config_dict.get("Path", config_dict.get("Url", config_dict.get("Arguments", "")))
+
         # -----------------------------------------------------------------
-        # SECTION 1: Intercept Native Management Commands
+        # MANAGEMENT DIRECTIVES (add, remove, group)
         # -----------------------------------------------------------------
         if raw_args.startswith("commit_action "):
             payload = raw_args[14:].strip()
@@ -88,7 +92,9 @@ class KeywordQueryEventListener(EventListener):
                     stype, sdata = [x.strip() for x in extra_data.split("|", 1)]
                     new_entry = {"Type": stype.capitalize()}
                     
-                    if stype.lower() in ["directory", "file", "url"]:
+                    if stype.lower() == "url":
+                        new_entry["Url"] = sdata
+                    elif stype.lower() in ["directory", "file"]:
                         new_entry["Path"] = sdata
                     elif stype.lower() == "shell":
                         new_entry["ShellType"] = "Cmd"
@@ -110,16 +116,12 @@ class KeywordQueryEventListener(EventListener):
 
                 return RenderResultListAction([
                     ExtensionResultItem(
-                        icon=icon,
-                        name="✨ Action Processed Successfully!",
+                        icon=icon, name="✨ Action Processed Successfully!",
                         description="Press Enter to return to main shortcuts panel.",
                         on_enter=SetUserQueryAction(f"{keyword} ")
                     )
                 ])
 
-        # -----------------------------------------------------------------
-        # SECTION 2: UI Parsers for Admin Commands (add, remove, group)
-        # -----------------------------------------------------------------
         bits = raw_args.split(maxsplit=3)
         cmd_trigger = bits[0].lower() if len(bits) > 0 else ""
 
@@ -129,9 +131,7 @@ class KeywordQueryEventListener(EventListener):
             spayload = bits[3] if len(bits) == 4 else ""
             return RenderResultListAction([
                 ExtensionResultItem(
-                    icon=icon,
-                    name=f"➕ Register new {stype} Shortcut: '{skey}'",
-                    description=f"Payload: {spayload}",
+                    icon=icon, name=f"➕ Register new {stype} Shortcut: '{skey}'", description=f"Payload: {spayload}",
                     on_enter=SetUserQueryAction(f"{keyword} commit_action add {skey} {stype} | {spayload}")
                 )
             ])
@@ -140,9 +140,7 @@ class KeywordQueryEventListener(EventListener):
             skey = bits[1]
             return RenderResultListAction([
                 ExtensionResultItem(
-                    icon=icon,
-                    name=f"🗑️ Remove Shortcut Named: '{skey}'",
-                    description="Press Enter to permanently clear this shortcut.",
+                    icon=icon, name=f"🗑️ Remove Shortcut Named: '{skey}'", description="Press Enter to permanently clear this shortcut.",
                     on_enter=SetUserQueryAction(f"{keyword} commit_action remove {skey}")
                 )
             ])
@@ -152,39 +150,32 @@ class KeywordQueryEventListener(EventListener):
             gkeys = bits[3] if len(bits) == 4 else ""
             return RenderResultListAction([
                 ExtensionResultItem(
-                    icon=icon,
-                    name=f"📁 Package New Collection Group: '{gkey}'",
-                    description=f"Links shortcuts keys: {gkeys}",
+                    icon=icon, name=f"📁 Package New Collection Group: '{gkey}'", description=f"Links shortcuts keys: {gkeys}",
                     on_enter=SetUserQueryAction(f"{keyword} commit_action add_group {gkey} {gkeys}")
                 )
             ])
 
         # -----------------------------------------------------------------
-        # SECTION 3: Exact / Arguments Routing Matcher
-        # -----------------------------------------------------------------
-        search_bits = raw_args.split(maxsplit=1)
-        user_key = search_bits[0] if len(search_bits) > 0 else ""
-        user_arg = search_bits[1].strip() if len(search_bits) == 2 else ""
-
-        if user_key in shortcuts:
-            sc = shortcuts[user_key]
-            stype = sc.get("Type", "Unknown")
-            desc = sc.get("Path") if "Path" in sc else sc.get("Arguments", "")
-            payload_data = {"args": user_arg, "config": sc}
-            
-            return RenderResultListAction([
-                ExtensionResultItem(
-                    icon=icon, 
-                    name=f"🚀 Run Shortcut: {user_key}", 
-                    description=f"Type: {stype} | Target: {desc}", 
-                    on_enter=ExtensionCustomAction(payload_data, keep_app_open=False)
-                )
-            ])
-
-        # -----------------------------------------------------------------
-        # SECTION 4: The Live Search View (FIXED: Clicking Runs Instantly)
+        # INTERFACE GENERATOR LOOP
         # -----------------------------------------------------------------
         if raw_args:
+            search_bits = raw_args.split(maxsplit=1)
+            user_key = search_bits[0]
+            user_arg = search_bits[1].strip() if len(search_bits) == 2 else ""
+            
+            # Catch exact matches with incoming custom parameters immediately
+            if user_key in shortcuts and user_arg:
+                sc = shortcuts[user_key]
+                stype = sc.get("Type", "Unknown")
+                desc = extract_target_string(sc)
+                payload_data = {"args": user_arg, "config": sc}
+                return RenderResultListAction([
+                    ExtensionResultItem(
+                        icon=icon, name=f"🚀 Run {user_key} with args", description=f"Processing query variables: '{user_arg}' -> {desc}",
+                        on_enter=ExtensionCustomAction(payload_data, keep_app_open=False)
+                    )
+                ])
+
             matched_keys = difflib.get_close_matches(raw_args, list(shortcuts.keys()), n=8, cutoff=0.1)
             if not matched_keys:
                 matched_keys = [k for k in shortcuts.keys() if raw_args.lower() in k.lower()]
@@ -195,31 +186,29 @@ class KeywordQueryEventListener(EventListener):
         for skey, sc in targets:
             stype = sc.get("Type", "Unknown")
             prefix = "📁" if stype in ["Directory", "File"] else "🌐" if stype == "Url" else "⚡" if stype == "Shell" else "📦"
-            desc = sc.get("Path") if "Path" in sc else sc.get("Arguments") if "Arguments" in sc else f"Group matching keys: {', '.join(sc.get('Keys', []))}"
-
-            # FIXED: Package configuration data right into the item card
+            
+            # Universal lookup fallback rules
+            desc = extract_target_string(sc) if stype != "Group" else f"Chained layout keys: {', '.join(sc.get('Keys', []))}"
             payload_data = {"args": "", "config": sc}
 
             items.append(ExtensionResultItem(
                 icon=icon,
                 name=f"{prefix} [{str(skey)}] {stype} Shortcut",
-                description=f"Payload config: {desc}",
-                # FIXED: Changed from SetUserQueryAction to ExtensionCustomAction to execute instantly on click
+                description=f"Target configuration: {desc}",
                 on_enter=ExtensionCustomAction(payload_data, keep_app_open=False)
             ))
 
         if not items:
             items.append(ExtensionResultItem(
-                icon=icon,
-                name="Shortcuts Hub Command Terminal",
-                description="Usage: add [type] [key] [payload] (Types: directory, file, url, shell)",
+                icon=icon, name="Shortcuts Manager Hub",
+                description="Syntax: add [type] [key] [target] (Types: directory, file, url, shell)",
                 on_enter=DoNothingAction()
             ))
 
         return RenderResultListAction(items[:15])
 
 # -----------------------------------------------------------------
-# NATIVE PROCESS ENVIRONMENT RUNNER (THE EXECUTION ENGINE)
+# NATIVE PROCESS ENVIRONMENT RUNNER
 # -----------------------------------------------------------------
 class ItemEnterEventListener(EventListener):
     def on_event(self, event, extension):
@@ -231,44 +220,49 @@ class ItemEnterEventListener(EventListener):
         sc = payload.get("config", {})
         stype = sc.get("Type", "Unknown")
 
+        def resolve_args(target_str, args_str):
+            if not target_str: return ""
+            return target_str.replace("${q}", args_str).replace("%s", args_str) if args_str else target_str.replace("${q}", "").replace("%s", "")
+
         if stype == "Url":
-            url = sc.get("Path", "")
-            if user_arg:
-                url = url.replace("${q}", user_arg).replace("%s", user_arg)
-            else:
-                url = url.replace("${q}", "").replace("%s", "")
-            if "://" not in url:
-                url = "https://" + url
-            webbrowser.open(url)
+            url = sc.get("Url", sc.get("Path", ""))
+            url = resolve_args(url, user_arg)
+            if url:
+                if "://" not in url:
+                    url = "https://" + url
+                webbrowser.open(url)
 
         elif stype in ["Directory", "File"]:
-            path = os.path.expandvars(sc.get("Path", ""))
-            if os.path.exists(path):
+            path = os.path.expandvars(sc.get("Path", sc.get("Url", "")))
+            if path and os.path.exists(path):
                 subprocess.Popen(["xdg-open", path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
         elif stype == "Shell":
             cmd = sc.get("Arguments", "")
-            if user_arg:
-                cmd = cmd.replace("${q}", user_arg).replace("%s", user_arg)
-            subprocess.Popen(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            cmd = resolve_args(cmd, user_arg)
+            if cmd:
+                subprocess.Popen(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
         elif stype == "Group":
             shortcuts = extension.load_shortcuts()
             for k in sc.get("Keys", []):
                 child = shortcuts.get(k)
-                if not child: 
-                    continue
+                if not child: continue
                 ctype = child.get("Type")
                 
                 if ctype in ["Directory", "File"]:
-                    subprocess.Popen(["xdg-open", os.path.expandvars(child.get("Path", ""))], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    p = os.path.expandvars(child.get("Path", child.get("Url", "")))
+                    if p: subprocess.Popen(["xdg-open", p], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 elif ctype == "Url":
-                    u = child.get("Path", "").replace("${q}", user_arg).replace("%s", user_arg)
-                    if "://" not in u: 
-                        u = "https://" + u
-                    webbrowser.open(u)
+                    u = child.get("Url", child.get("Path", ""))
+                    u = resolve_args(u, user_arg)
+                    if u:
+                        if "://" not in u: u = "https://" + u
+                        webbrowser.open(u)
                 elif ctype == "Shell":
-                    subprocess.Popen(child.get("Arguments", "").replace("${q}", user_arg).replace("%s", user_arg), shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    c = child.get("Arguments", "")
+                    c = resolve_args(c, user_arg)
+                    if c: subprocess.Popen(c, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 if __name__ == '__main__':
     ShortcutsPlugin().run()
