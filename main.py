@@ -3,6 +3,7 @@ import sys
 import json
 import logging
 import subprocess
+import webbrowser
 import difflib
 from pathlib import Path
 
@@ -20,7 +21,6 @@ logger = logging.getLogger(__name__)
 class ShortcutsPlugin(Extension):
     def __init__(self):
         super(ShortcutsPlugin, self).__init__()
-        # Isolated default database specifically named my-shortcuts.json
         self.preferences = {'shortcuts_path': '~/.config/ulauncher/my-shortcuts.json'}
         self.subscribe(KeywordQueryEvent, KeywordQueryEventListener())
         self.subscribe(PreferencesEvent, PreferencesEventListener())
@@ -125,7 +125,6 @@ class KeywordQueryEventListener(EventListener):
         bits = raw_args.split(maxsplit=3)
         cmd_trigger = bits[0].lower() if len(bits) > 0 else ""
 
-        # Syntax: q add <type> <key> <payload>
         if cmd_trigger == "add" and len(bits) >= 3:
             stype = bits[1]
             skey = bits[2]
@@ -139,7 +138,6 @@ class KeywordQueryEventListener(EventListener):
                 )
             ])
 
-        # Syntax: q remove <key>
         if cmd_trigger == "remove" and len(bits) >= 2:
             skey = bits[1]
             return RenderResultListAction([
@@ -151,7 +149,6 @@ class KeywordQueryEventListener(EventListener):
                 )
             ])
 
-        # Syntax: q group add <group_key> <keys...>
         if cmd_trigger == "group" and len(bits) >= 3 and bits[1].lower() == "add":
             gkey = bits[2]
             gkeys = bits[3] if len(bits) == 4 else ""
@@ -171,24 +168,28 @@ class KeywordQueryEventListener(EventListener):
         user_key = search_bits[0] if len(search_bits) > 0 else ""
         user_arg = search_bits[1].strip() if len(search_bits) == 2 else ""
 
-        # Exact key direct hit matching routing layout
         if user_key in shortcuts:
             sc = shortcuts[user_key]
             stype = sc.get("Type", "Unknown")
             
             if stype == "Url":
                 url = sc.get("Path", "")
-                # Dynamic argument replacement matching Flow Launcher ${q} or standard input templates
                 if user_arg:
                     url = url.replace("${q}", user_arg).replace("%s", user_arg)
                 else:
                     url = url.replace("${q}", "").replace("%s", "")
-                if not url.startswith(("http://", "https://")):
+                
+                # Check for alternative URIs / Custom Protocols
+                if "://" in url:
+                    # Keep customized URIs exactly as intended (obsidian://, file://)
+                    pass
+                else:
                     url = "https://" + url
                 
+                # Use Python's native webbrowser package wrapper to avoid xdg-open shell escaping crashes
                 return RenderResultListAction([ExtensionResultItem(
-                    icon=icon, name=f"🌐 Launching URL: {user_key}", description=f"Open browser: {url}",
-                    on_enter=RunScriptAction(f"xdg-open '{url}'")
+                    icon=icon, name=f"🌐 URI Trigger: {user_key}", description=f"Opening URI: {url}",
+                    on_enter=RunScriptAction(f"python3 -m webbrowser '{url}'")
                 )])
                 
             elif stype in ["Directory", "File"]:
@@ -218,8 +219,9 @@ class KeywordQueryEventListener(EventListener):
                             chained.append(f"xdg-open '{os.path.expandvars(child.get('Path'))}'")
                         elif ctype == "Url":
                             u = child.get("Path").replace("${q}", user_arg).replace("%s", user_arg)
-                            if not u.startswith(("http://", "https://")): u = "https://" + u
-                            chained.append(f"xdg-open '{u}'")
+                            if "://" not in u:
+                                u = "https://" + u
+                            chained.append(f"python3 -m webbrowser '{u}'")
                         elif ctype == "Shell":
                             chained.append(child.get("Arguments").replace("${q}", user_arg).replace("%s", user_arg))
                 
@@ -229,7 +231,7 @@ class KeywordQueryEventListener(EventListener):
                     on_enter=RunScriptAction(exec_payload)
                 )])
 
-        # If no explicit match, build list view and fuzzy search filtering matches
+        # List view / fuzzy matcher
         if raw_args:
             matched_keys = difflib.get_close_matches(raw_args, list(shortcuts.keys()), n=5, cutoff=0.2)
             if not matched_keys:
