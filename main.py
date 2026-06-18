@@ -78,7 +78,7 @@ class KeywordQueryEventListener(EventListener):
             return config_dict.get("Path", config_dict.get("Url", config_dict.get("Arguments", "")))
 
         # -----------------------------------------------------------------
-        # MANAGEMENT UTILITIES (add, remove, group)
+        # SECTION 1: Intercept Native Management Commits
         # -----------------------------------------------------------------
         if raw_args.startswith("commit_action "):
             payload = raw_args[14:].strip()
@@ -121,8 +121,52 @@ class KeywordQueryEventListener(EventListener):
                     )
                 ])
 
+        # -----------------------------------------------------------------
+        # SECTION 2: Admin & Interactive Group Inspection Utilities
+        # -----------------------------------------------------------------
         bits = raw_args.split(maxsplit=3)
         cmd_trigger = bits[0].lower() if len(bits) > 0 else ""
+
+        if cmd_trigger == "group" and len(bits) >= 3 and bits[1].lower() == "view":
+            target_gkey = bits[2]
+            group_obj = shortcuts.get(target_gkey)
+            
+            if group_obj and group_obj.get("Type") == "Group":
+                chained_keys = group_obj.get("Keys", [])
+                
+                # FEATURE ADDITION: "Open All" Launcher Header Action Block
+                items.append(ExtensionResultItem(
+                    icon=icon,
+                    name=f"🚀 Open All Items in Group: '{target_gkey}'",
+                    description=f"Press Enter to fire all {len(chained_keys)} internal actions right now.",
+                    on_enter=ExtensionCustomAction({"args": "", "config": group_obj}, keep_app_open=False)
+                ))
+                
+                # Append individual components beneath the main trigger button
+                for ck in chained_keys:
+                    child_sc = shortcuts.get(ck)
+                    if not child_sc:
+                        continue
+                    ctype = child_sc.get("Type", "Unknown")
+                    cprefix = "📁" if ctype in ["Directory", "File"] else "🌐" if ctype == "Url" else "⚡" if ctype == "Shell" else "📦"
+                    cdesc = extract_target_string(child_sc)
+                    
+                    items.append(ExtensionResultItem(
+                        icon=icon,
+                        name=f"{cprefix} Component: {ck} [{ctype}]",
+                        description=f"Target: {cdesc} (Click to execute alone)",
+                        on_enter=ExtensionCustomAction({"args": "", "config": child_sc}, keep_app_open=False)
+                    ))
+                
+                return RenderResultListAction(items[:15])
+            else:
+                return RenderResultListAction([
+                    ExtensionResultItem(
+                        icon=icon, name=f"Group '{target_gkey}' not found",
+                        description="Ensure the key name is accurate and registered as a Group type.",
+                        on_enter=DoNothingAction()
+                    )
+                ])
 
         if cmd_trigger == "add" and len(bits) >= 3:
             stype = bits[1]
@@ -155,7 +199,7 @@ class KeywordQueryEventListener(EventListener):
             ])
 
         # -----------------------------------------------------------------
-        # INTERFACE LOOP MATCH ENGINE
+        # SECTION 3: Standard Interface List Matcher Loop
         # -----------------------------------------------------------------
         if raw_args:
             search_bits = raw_args.split(maxsplit=1)
@@ -185,27 +229,31 @@ class KeywordQueryEventListener(EventListener):
             stype = sc.get("Type", "Unknown")
             prefix = "📁" if stype in ["Directory", "File"] else "🌐" if stype == "Url" else "⚡" if stype == "Shell" else "📦"
             
-            desc = extract_target_string(sc) if stype != "Group" else f"Chained components: {', '.join(sc.get('Keys', []))}"
+            if stype == "Group":
+                desc = f"Group [View contents with: group view {skey}] -> Keys: {', '.join(sc.get('Keys', []))}"
+            else:
+                desc = f"Target: {extract_target_string(sc)}"
+                
             payload_data = {"args": "", "config": sc}
 
             items.append(ExtensionResultItem(
                 icon=icon,
                 name=f"{prefix} [{str(skey)}] {stype} Shortcut",
-                description=f"Target: {desc}",
+                description=desc,
                 on_enter=ExtensionCustomAction(payload_data, keep_app_open=False)
             ))
 
         if not items:
             items.append(ExtensionResultItem(
                 icon=icon, name="Shortcuts Manager Hub",
-                description="Syntax: add [type] [key] [target]",
+                description="Syntax: group view [group_key] | add [type] [key] [target]",
                 on_enter=DoNothingAction()
             ))
 
         return RenderResultListAction(items[:15])
 
 # -----------------------------------------------------------------
-# SMART EXECUTION CONTAINER (ROUTES TO SYSTEM CORE APPS DYNAMICALLY)
+# SECTION 4: Smart Native Application & Process Execution Environment
 # -----------------------------------------------------------------
 class ItemEnterEventListener(EventListener):
     def on_event(self, event, extension):
@@ -222,14 +270,10 @@ class ItemEnterEventListener(EventListener):
             return target_str.replace("${q}", args_str).replace("%s", args_str) if args_str else target_str.replace("${q}", "").replace("%s", "")
 
         def execute_uri(uri_string):
-            """Intelligently routes URLs to the browser, and protocols to native applications."""
             if not uri_string: return
-            
-            # Detect native application schemas (obsidian://, vlc://, etc.)
             if "://" in uri_string and not uri_string.startswith(("http://", "https://")):
                 subprocess.Popen(["xdg-open", uri_string], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             else:
-                # Normal HTTP links go out to standard browser
                 if "://" not in uri_string:
                     uri_string = "https://" + uri_string
                 webbrowser.open(uri_string)
